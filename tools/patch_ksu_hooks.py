@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-为 LineageOS msm-4.9 (OnePlus 6 / enchilada, 内核 4.9.337)
-插入 SukiSU-Ultra builtin 分支所需的手动 hook 调用。
+给 LineageOS msm-4.9 (OnePlus 6 / enchilada, 内核 4.9.337) 内核
+做 SukiSU-Ultra builtin 分支的源码级适配。
 
-builtin 分支不依赖 kprobes，靠内核源码里显式调用 ksu_handle_* 入口。
-一加6 的 4.9 内核对应官方集成文档里的这四段补丁 + 一处 policy_rwlock 去 static。
+两部分:
+  A. 4.9 内核需要的 hook 插入（execve / faccessat / newfstatat / reboot / policy_rwlock）
+  B. SukiSU 源码在 <5.10 内核上的兼容修补（无效 include 加版本保护）
 
 用法:
     python3 tools/patch_ksu_hooks.py <kernel_src_dir>
 
-幂等: 已插入过的位置会跳过，可以重复执行。
+幂等: 已处理过的位置会跳过，可以重复执行。
 """
 
 import sys
 import os
 
-# ---------------------------------------------------------------- 插入规则
+# ---------------------------------------------------------------- A. hook 插入
 # anchor_func   : 用于定位函数起点的唯一文本
 # anchor_before : 在该文本所在行之前插入 hook（必须在 anchor_func 之后第一次出现）
 # snippet       : 要插入的代码块，自带缩进与结尾空行
@@ -84,6 +85,20 @@ POLICY_FILE = "security/selinux/ss/services.c"
 POLICY_FROM = "static DEFINE_RWLOCK(policy_rwlock);"
 POLICY_TO = "DEFINE_RWLOCK(policy_rwlock);"
 
+# ------------------------------------------ B. SukiSU 源码在 4.9 上的兼容修补
+# drivers/kernelsu 是 symlink 到 KernelSU/kernel
+SUKISU_FIXES = [
+    {
+        "name": "static_call.h (Linux 5.10+)",
+        "file": "drivers/kernelsu/kernel_includes.h",
+        "old": "#include <linux/static_call.h>",
+        "new": ("#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n"
+                "#include <linux/static_call.h>\n"
+                "#endif"),
+        "guard": "KERNEL_VERSION(5, 10, 0)\n#include <linux/static_call.h>",
+    },
+]
+
 
 def read(path):
     with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
@@ -102,7 +117,7 @@ def patch_one(root, rule):
 
     src = read(path)
     if rule["guard"] in src:
-        return "SKIP", "已包含 " + rule["guard"]
+        return "SKIP", "已包含 " + rule["guard"][:40]
 
     fi = src.find(rule["anchor_func"])
     if fi < 0:
@@ -114,16 +129,12 @@ def patch_one(root, rule):
     if bi < 0:
         return "FAIL", "函数体内找不到插入锚点: " + rule["anchor_before"][:60]
 
-    # 回退到该行行首，保持缩进干净
     line_start = src.rfind("\n", 0, bi) + 1
-    new_src = src[:line_start] + rule["snippet"] + src[line_start:]
-    write(path, new_src)
+    write(path, src[:line_start] + rule["snippet"] + src[line_start:])
 
-    # 立刻回读校验
-    check = read(path)
-    if rule["guard"] not in check:
+    if rule["guard"] not in read(path):
         return "FAIL", "写入后校验失败: " + rule["file"]
-    return "OK", "已插入 hook（锚点偏移 %d）" % line_start
+    return "OK", "已插入 hook（偏移 %d）" % line_start
 
 
 def patch_policy_rwlock(root):
@@ -134,11 +145,26 @@ def patch_policy_rwlock(root):
     if POLICY_TO in src and POLICY_FROM not in src:
         return "SKIP", "policy_rwlock 已处理"
     if POLICY_FROM not in src:
-        return "SKIP", "未找到 static policy_rwlock（内核可能已回移植 selinux_state，可忽略）"
+        return "SKIP", "未找到 static policy_rwlock（内核可能已回移植，可忽略）"
     write(path, src.replace(POLICY_FROM, POLICY_TO, 1))
     if POLICY_FROM in read(path):
         return "FAIL", "写入后校验失败: " + POLICY_FILE
     return "OK", "policy_rwlock 已去掉 static"
+
+
+def patch_sukisu_source(root, fix):
+    path = os.path.join(root, fix["file"])
+    if not os.path.exists(path):
+        return "MISSING", "文件不存在: " + fix["file"]
+    src = read(path)
+    if fix["guard"] in src:
+        return "SKIP", "已修补"
+    if fix["old"] not in src:
+        return "SKIP", "源码里没有这行，可能上游已修"
+    write(path, src.replace(fix["old"], fix["new"], 1))
+    if fix["guard"] not in read(path):
+        return "FAIL", "写入后校验失败: " + fix["file"]
+    return "OK", "已加版本保护"
 
 
 def main():
@@ -152,25 +178,36 @@ def main():
         return 2
 
     print("内核源码: " + os.path.abspath(root))
-    print("-" * 68)
+    print("=" * 70)
+    print("[A] 4.9 内核 hook 插入")
+    print("-" * 70)
 
     failed = 0
     for rule in RULES:
         status, msg = patch_one(root, rule)
-        print("[%-7s] %-24s %s" % (status, rule["name"], msg))
+        print("  [%-7s] %-24s %s" % (status, rule["name"], msg))
         if status in ("FAIL", "MISSING"):
             failed += 1
 
     status, msg = patch_policy_rwlock(root)
-    print("[%-7s] %-24s %s" % (status, "policy_rwlock", msg))
+    print("  [%-7s] %-24s %s" % (status, "policy_rwlock", msg))
     if status in ("FAIL", "MISSING"):
         failed += 1
 
-    print("-" * 68)
+    print("-" * 70)
+    print("[B] SukiSU 源码兼容修补")
+    print("-" * 70)
+    for fix in SUKISU_FIXES:
+        status, msg = patch_sukisu_source(root, fix)
+        print("  [%-7s] %-24s %s" % (status, fix["name"], msg))
+        if status in ("FAIL", "MISSING"):
+            failed += 1
+
+    print("=" * 70)
     if failed:
         print("[!] 有 %d 处失败，请按上面提示人工处理后再继续" % failed)
         return 1
-    print("[+] 全部 hook 已就位")
+    print("[+] 全部处理完成")
     return 0
 
 
