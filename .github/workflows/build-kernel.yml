@@ -192,9 +192,17 @@ jobs:
           ls -la kernel/
 
           if [ -f anykernel.sh ]; then
-            sed -i 's|^block=.*|block=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
-            sed -i 's|^kernel.string=.*|kernel.string=SukiSU-Ultra enchilada (LineageOS 22.2 / 4.9)|' anykernel.sh
-            echo "[+] anykernel.sh 已配置"
+            # 注意: AnyKernel3 模板默认是 maguro/omap 平台，必须全部改掉
+            sed -i 's|^kernel\.string=.*|kernel.string=SukiSU-Ultra enchilada (LineageOS 22.2 / 4.9)|' anykernel.sh
+            sed -i 's|^device\.name1=.*|device.name1=enchilada|' anykernel.sh
+            sed -i 's|^device\.name2=.*|device.name2=OnePlus6|' anykernel.sh
+            sed -i 's|^device\.name3=.*|device.name3=|' anykernel.sh
+            sed -i 's|^device\.name4=.*|device.name4=|' anykernel.sh
+            sed -i 's|^device\.name5=.*|device.name5=|' anykernel.sh
+            sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
+            sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1;|' anykernel.sh
+            echo "[+] anykernel.sh 已配置："
+            grep -E '^(device\.name|BLOCK|IS_SLOT_DEVICE|kernel\.string)' anykernel.sh
           else
             echo "[:!] anykernel.sh 不存在，跳过配置"
           fi
