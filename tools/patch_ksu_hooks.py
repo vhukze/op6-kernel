@@ -148,6 +148,35 @@ SUKISU_FIXES = [
                 "     * If any of the kallsyms lookups failed, refuse to claim success."),
         "guard": "        }\n#endif\n    }\n#endif\n\n    /*\n     * If any of the kallsyms lookups failed",
     },
+    {
+        # SukiSU 自带 ksu_access_ok 兼容宏（4.9 走 3 参数 VERIFY_READ 分支），
+        # 但 kpm.c 这里漏用了，直接调裸 access_ok(2 参数) 会在 4.9 上炸。
+        "name": "kpm.c access_ok 兼容宏",
+        "file": "drivers/kernelsu/extension/kpm/kpm.c",
+        "old": "if (!access_ok(u64_to_user_ptr(cmd.result_code), sizeof(result))) return -EFAULT;",
+        "new": "if (!ksu_access_ok(u64_to_user_ptr(cmd.result_code), sizeof(result))) return -EFAULT;",
+        "guard": "ksu_access_ok(u64_to_user_ptr(cmd.result_code)",
+    },
+    {
+        # linux/set_memory.h 是 4.13 才拆出来的通用头，4.9 上不存在。
+        # 全项目只 include 不调用，加条件跳过即可。
+        "name": "compact.c set_memory.h (4.13+)",
+        "file": "drivers/kernelsu/extension/kpm/compact.c",
+        "old": "#include <linux/set_memory.h>",
+        "new": ("#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)\n"
+                "#include <linux/set_memory.h>\n"
+                "#endif"),
+        "guard": "KERNEL_VERSION(4, 13, 0)\n#include <linux/set_memory.h>",
+    },
+    {
+        "name": "super_access.c set_memory.h (4.13+)",
+        "file": "drivers/kernelsu/extension/kpm/super_access.c",
+        "old": "#include <linux/set_memory.h>",
+        "new": ("#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)\n"
+                "#include <linux/set_memory.h>\n"
+                "#endif"),
+        "guard": "KERNEL_VERSION(4, 13, 0)\n#include <linux/set_memory.h>",
+    },
 ]
 
 
