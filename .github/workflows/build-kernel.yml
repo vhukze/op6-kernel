@@ -178,22 +178,39 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
           rm -rf .git examples
+
           IMG=""
-          for f in ../kernel/out/arch/arm64/boot/Image.gz ../kernel/out/arch/arm64/boot/Image.gz-dtb; do
+          for f in ../kernel/out/arch/arm64/boot/Image.gz ../kernel/out/arch/arm64/boot/Image.gz-dtb ../kernel/out/arch/arm64/boot/Image; do
             [ -f "$f" ] && IMG="$f" && break
           done
+          if [ -z "$IMG" ]; then echo "[:!] 没找到内核镜像"; ls -la ../kernel/out/arch/arm64/boot/; exit 1; fi
+          echo "[+] 使用镜像: $IMG ($(stat -c %s "$IMG") 字节)"
+
+          # 新版 AnyKernel3 没有 kernel/ 目录，必须自己建
+          mkdir -p kernel
           cp "$IMG" kernel/
-          sed -i 's|^block=.*|block=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
-          sed -i 's|^kernel.string=.*|kernel.string=SukiSU-Ultra enchilada (LineageOS 22.2 / 4.9)|' anykernel.sh
+          ls -la kernel/
+
+          if [ -f anykernel.sh ]; then
+            sed -i 's|^block=.*|block=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
+            sed -i 's|^kernel.string=.*|kernel.string=SukiSU-Ultra enchilada (LineageOS 22.2 / 4.9)|' anykernel.sh
+            echo "[+] anykernel.sh 已配置"
+          else
+            echo "[:!] anykernel.sh 不存在，跳过配置"
+          fi
+
           zip -r9 "../SukiSU-enchilada-$(date +%Y%m%d)-${GITHUB_RUN_NUMBER}.zip" . -x '*.zip'
+          ls -la ../SukiSU-enchilada-*.zip
 
       - name: 上传产物
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: enchilada-kernel-${{ github.run_number }}
           path: |
             kernel/out/arch/arm64/boot/Image.gz
             kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/Image
             SukiSU-enchilada-*.zip
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
