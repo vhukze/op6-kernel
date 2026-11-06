@@ -33,7 +33,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             bc bison build-essential flex libssl-dev libelf-dev \
-            python3 zip unzip rsync cpio liblz4-tool git curl
+            python3 zip unzip rsync cpio liblz4-tool git curl \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi
 
       - name: 拉取内核源码
         run: |
@@ -96,12 +98,21 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          make O=out ARCH=arm64 "${DEFCONFIG}"
-          make -j$(nproc) O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          # 4.9 内核必须在每一步都传 CC/CROSS_COMPILE，
+          # 否则 prepare-compiler-check 会用不存在的 aarch64-linux-gnu-gcc 去探测
+          MAKE_ARGS="CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+
+          echo "===== 工具链自检 ====="
+          which clang; clang --version | head -1
+          which aarch64-linux-gnu-gcc; aarch64-linux-gnu-gcc --version | head -1
+          which aarch64-linux-gnu-ld; aarch64-linux-gnu-ld --version | head -1
+
+          make O=out ARCH=arm64 $MAKE_ARGS "${DEFCONFIG}"
+          echo "===== defconfig 关键项 ====="
+          grep -E '^CONFIG_(KSU|KPM|KSU_SUSFS)=' out/.config || echo "[!] KSU 配置未写入 .config"
+
+          make -j$(nproc) O=out ARCH=arm64 $MAKE_ARGS
           echo "===== 产物 ====="
           find out/arch/arm64/boot -maxdepth 1 -type f | sort
 
