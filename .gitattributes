@@ -1,0 +1,8 @@
+# 云编译关键：所有文本文件在仓库里必须是 LF
+# 否则 Linux runner 上 python/bash 会因为 CRLF 报错
+* text=auto eol=lf
+
+# Windows 本地脚本保留 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
