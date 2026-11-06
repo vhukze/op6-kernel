@@ -1,0 +1,144 @@
+name: Build OnePlus6 Kernel (LineageOS 22.2 + SukiSU builtin)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sukisu_branch:
+        description: "SukiSU 分支 (builtin 带 SUSFS+KPM，main 走 kprobes)"
+        required: true
+        default: "builtin"
+        type: choice
+        options:
+          - builtin
+          - main
+  push:
+    branches: [ main ]
+
+env:
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_oneplus_sdm845
+  KERNEL_BRANCH: lineage-22.2
+  CLANG_VERSION: clang-r522817
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bc bison build-essential flex libssl-dev libelf-dev \
+            python3 zip unzip rsync cpio liblz4-tool git curl
+
+      - name: 拉取内核源码
+        run: |
+          git clone --depth=1 -b "${KERNEL_BRANCH}" "${KERNEL_REPO}" kernel
+          cd kernel
+          echo "内核版本: $(sed -n 's/^VERSION = //p' Makefile).$(sed -n 's/^PATCHLEVEL = //p' Makefile).$(sed -n 's/^SUBLEVEL = //p' Makefile)"
+          echo "===== 可用 defconfig ====="
+          ls arch/arm64/configs/ | head -40
+
+      - name: 探测 defconfig
+        run: |
+          cd kernel
+          for c in vendor/enchilada_defconfig enchilada_defconfig vendor/oneplus6_defconfig; do
+            if [ -f "arch/arm64/configs/$c" ]; then
+              echo "DEFCONFIG=$c" >> "$GITHUB_ENV"
+              echo "[+] 选中 defconfig: $c"
+              exit 0
+            fi
+          done
+          echo "[:!] 没找到 enchilada defconfig，全部列表如下"
+          ls arch/arm64/configs/
+          exit 1
+
+      - name: 拉取 clang 工具链
+        run: |
+          if git clone --depth=1 -b lineage-22.2 \
+               "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_${CLANG_VERSION}" clang 2>/dev/null; then
+            echo "[+] 使用 LineageOS prebuilt clang"
+          else
+            echo "[*] Lineage 仓库不可用，回落到 googlesource"
+            URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${CLANG_VERSION}.tar.gz"
+            curl -fsSL "$URL" -o clang.tar.gz
+            mkdir -p clang
+            tar -xzf clang.tar.gz -C clang
+          fi
+          ./clang/bin/clang --version
+
+      - name: 集成 SukiSU
+        run: |
+          cd kernel
+          BRANCH="${{ github.event.inputs.sukisu_branch }}"
+          BRANCH="${BRANCH:-builtin}"
+          echo "使用分支: $BRANCH"
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$BRANCH"
+          echo "===== drivers/kernelsu 就位检查 ====="
+          ls -la drivers/kernelsu 2>/dev/null | head -10
+          grep -n "kernelsu" drivers/Makefile drivers/Kconfig || true
+
+      - name: 插入 4.9 手动 hook
+        run: |
+          python3 tools/patch_ksu_hooks.py kernel
+
+      - name: 合并全功能内核配置
+        run: |
+          python3 tools/apply_config.py "kernel/arch/arm64/configs/${DEFCONFIG}" tools/extra_config.conf
+
+      - name: 编译内核
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          make O=out ARCH=arm64 "${DEFCONFIG}"
+          make -j$(nproc) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          echo "===== 产物 ====="
+          find out/arch/arm64/boot -maxdepth 1 -type f | sort
+
+      - name: 校验 KSU 是否真的编进去了
+        run: |
+          cd kernel
+          IMG=""
+          for f in out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/Image; do
+            [ -f "$f" ] && IMG="$f" && break
+          done
+          if [ -z "$IMG" ]; then echo "[:!] 没找到内核镜像"; exit 1; fi
+          echo "内核镜像: $IMG ($(stat -c %s "$IMG") 字节)"
+          echo "===== 关键配置生效情况 ====="
+          grep -E '^CONFIG_(KSU|KPM|KSU_SUSFS|USER_NS|NF_TABLES)=' out/.config || true
+          grep -c '^CONFIG_KSU_SUSFS' out/.config || true
+
+      - name: 打包 AnyKernel3 (Recovery 直刷)
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          cd anykernel
+          rm -rf .git examples
+          IMG=""
+          for f in ../kernel/out/arch/arm64/boot/Image.gz ../kernel/out/arch/arm64/boot/Image.gz-dtb; do
+            [ -f "$f" ] && IMG="$f" && break
+          done
+          cp "$IMG" kernel/
+          sed -i 's|^block=.*|block=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
+          sed -i 's|^kernel.string=.*|kernel.string=SukiSU-Ultra enchilada (LineageOS 22.2 / 4.9)|' anykernel.sh
+          zip -r9 "../SukiSU-enchilada-$(date +%Y%m%d)-${GITHUB_RUN_NUMBER}.zip" . -x '*.zip'
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: enchilada-kernel-${{ github.run_number }}
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            SukiSU-enchilada-*.zip
+          if-no-files-found: error
+          retention-days: 30

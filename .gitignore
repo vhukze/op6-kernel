@@ -1,0 +1,15 @@
+# Python 语法检查产物
+__pycache__/
+*.pyc
+
+# 编译临时目录
+out/
+kernel/
+clang/
+anykernel/
+*.tar.gz
+
+# 本地产物
+SukiSU-enchilada-*.zip
+Image.gz
+Image.gz-dtb
