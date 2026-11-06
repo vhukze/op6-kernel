@@ -177,6 +177,97 @@ SUKISU_FIXES = [
                 "#endif"),
         "guard": "KERNEL_VERSION(4, 13, 0)\n#include <linux/set_memory.h>",
     },
+    {
+        # 4.9.337 这棵内核树的 struct task_struct 里没有 security 字段
+        # （include/linux/sched.h 全文搜 security/CONFIG_SECURITY 均为 0 命中），
+        # 但 KPM 写死了 DEFINE_MEMBER(task_struct, security) → offsetof 编不过。
+        "name": "super_access.c task_struct.security",
+        "file": "drivers/kernelsu/extension/kpm/super_access.c",
+        "old": ("#ifdef CONFIG_SECURITY\n"
+                "DEFINE_MEMBER(task_struct, security)\n"
+                "#endif"),
+        "new": ("#if defined(CONFIG_SECURITY) && LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)\n"
+                "DEFINE_MEMBER(task_struct, security)\n"
+                "#endif"),
+        "guard": "defined(CONFIG_SECURITY) && LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)",
+    },
+    {
+        # susfs_parse_priority_app_strings 是 SUSFS 提供的函数，
+        # 4.9 上 CONFIG_KSU_SUSFS 关闭后调用点未加保护 → 隐式声明。
+        "name": "pkg_observer.c susfs 调用 1",
+        "file": "drivers/kernelsu/manager/pkg_observer.c",
+        "old": ("    track_throne(false);\n"
+                "    // Renew the priority uid bitmap filter\n"
+                "    susfs_parse_priority_app_strings();"),
+        "new": ("    track_throne(false);\n"
+                "#ifdef CONFIG_KSU_SUSFS\n"
+                "    // Renew the priority uid bitmap filter\n"
+                "    susfs_parse_priority_app_strings();\n"
+                "#endif"),
+        "guard": "track_throne(false);\n#ifdef CONFIG_KSU_SUSFS\n    // Renew the priority uid",
+    },
+    {
+        "name": "pkg_observer.c susfs 调用 2",
+        "file": "drivers/kernelsu/manager/pkg_observer.c",
+        "old": ("    // Renew the getpriority uid bitmap filter\n"
+                "    susfs_parse_priority_app_strings();"),
+        "new": ("#ifdef CONFIG_KSU_SUSFS\n"
+                "    // Renew the getpriority uid bitmap filter\n"
+                "    susfs_parse_priority_app_strings();\n"
+                "#endif"),
+        "guard": "#ifdef CONFIG_KSU_SUSFS\n    // Renew the getpriority uid bitmap filter",
+    },
+    {
+        # kvcalloc 是 4.18 引入的；4.9 连 kvmalloc_array 都没有（4.11+），
+        # 只能自己用 kmalloc/vmalloc 拼一个零初始化的等效实现。
+        "name": "kernel_compat.h kvcalloc",
+        "file": "drivers/kernelsu/kernel_compat.h",
+        "old": ("#define ksu_access_ok(addr, size) access_ok(VERIFY_READ, addr, size)\n"
+                "#endif\n"
+                "\n"
+                "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)"),
+        "new": ("#define ksu_access_ok(addr, size) access_ok(VERIFY_READ, addr, size)\n"
+                "#endif\n"
+                "\n"
+                "#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 18, 0)\n"
+                "/* kvcalloc 是 4.18 引入的，4.9 连 kvmalloc_array 都没有 */\n"
+                "static inline void *ksu_kvcalloc_compat(size_t n, size_t size, gfp_t flags)\n"
+                "{\n"
+                "    size_t total = n * size;\n"
+                "    void *p = kmalloc(total, flags);\n"
+                "    if (!p)\n"
+                "        p = vmalloc(total);\n"
+                "    if (p)\n"
+                "        __builtin_memset(p, 0, total);\n"
+                "    return p;\n"
+                "}\n"
+                "#define kvcalloc(n, size, flags) ksu_kvcalloc_compat((n), (size), (flags))\n"
+                "#endif\n"
+                "\n"
+                "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)"),
+        "guard": "#define kvcalloc(n, size, flags) ksu_kvcalloc_compat",
+    },
+    {
+        # linux/sched/signal.h 是 4.11+ 的头文件，4.9 里在 linux/sched.h
+        "name": "symbol_resolver.c sched/signal.h",
+        "file": "drivers/kernelsu/infra/symbol_resolver.c",
+        "old": "#include <linux/sched/signal.h>",
+        "new": ("#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)\n"
+                "#include <linux/sched/signal.h>\n"
+                "#else\n"
+                "#include <linux/sched.h>\n"
+                "#endif"),
+        "guard": "KERNEL_VERSION(4, 11, 0)\n#include <linux/sched/signal.h>",
+    },
+    {
+        # 4.9 上 selinux/rules.c 走 <5.10 分支，pol/old_pol 未被使用，
+        # clang 的 -Wunused-variable 撞上 -Werror 直接变错误。
+        "name": "Makefile 放宽 unused-variable",
+        "file": "drivers/kernelsu/Makefile",
+        "old": "ccflags-y += -Wno-declaration-after-statement -Wno-unused-function",
+        "new": "ccflags-y += -Wno-declaration-after-statement -Wno-unused-function -Wno-error=unused-variable",
+        "guard": "-Wno-error=unused-variable",
+    },
 ]
 
 
