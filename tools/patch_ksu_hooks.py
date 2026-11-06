@@ -89,13 +89,64 @@ POLICY_TO = "DEFINE_RWLOCK(policy_rwlock);"
 # drivers/kernelsu 是 symlink 到 KernelSU/kernel
 SUKISU_FIXES = [
     {
-        "name": "static_call.h (Linux 5.10+)",
+        "name": "static_call.h (5.10+)",
         "file": "drivers/kernelsu/kernel_includes.h",
         "old": "#include <linux/static_call.h>",
         "new": ("#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n"
                 "#include <linux/static_call.h>\n"
                 "#endif"),
         "guard": "KERNEL_VERSION(5, 10, 0)\n#include <linux/static_call.h>",
+    },
+    {
+        "name": "preinit.h 宏重定义",
+        "file": "drivers/kernelsu/preinit/common/preinit.h",
+        "old": ("#if !defined(CONFIG_ARM64) || !defined(KSU_CAN_USE_JUMP_LABEL)\n"
+                "#define KSU_NO_PREINIT\n"
+                "#endif"),
+        "new": ("#if !defined(CONFIG_ARM64) || !defined(KSU_CAN_USE_JUMP_LABEL)\n"
+                "#ifndef KSU_NO_PREINIT\n"
+                "#define KSU_NO_PREINIT\n"
+                "#endif\n"
+                "#endif"),
+        "guard": "#ifndef KSU_NO_PREINIT\n#define KSU_NO_PREINIT",
+    },
+    {
+        "name": "vdso 头文件 (4.16+)",
+        "file": "drivers/kernelsu/extension/cpu_spoof.c",
+        "old": "#include <vdso/datapage.h>\n#include <vdso/clocksource.h>",
+        "new": ("#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)\n"
+                "#include <vdso/datapage.h>\n"
+                "#include <vdso/clocksource.h>\n"
+                "#endif"),
+        "guard": "KERNEL_VERSION(4, 16, 0)\n#include <vdso/datapage.h>",
+    },
+    {
+        "name": "vdso 计时模式整块 (4.16+)",
+        "file": "drivers/kernelsu/extension/cpu_spoof.c",
+        "old": "        {\n            unsigned int part = MIDR_PARTNUM(cmd->midr);",
+        "new": ("#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)\n"
+                "        {\n            unsigned int part = MIDR_PARTNUM(cmd->midr);"),
+        "guard": "KERNEL_VERSION(4, 16, 0)\n        {\n            unsigned int part = MIDR_PARTNUM",
+    },
+    {
+        "name": "vdso 计时模式块收尾",
+        "file": "drivers/kernelsu/extension/cpu_spoof.c",
+        "old": ("            }\n"
+                "        }\n"
+                "    }\n"
+                "#endif\n"
+                "\n"
+                "    /*\n"
+                "     * If any of the kallsyms lookups failed, refuse to claim success."),
+        "new": ("            }\n"
+                "        }\n"
+                "#endif\n"
+                "    }\n"
+                "#endif\n"
+                "\n"
+                "    /*\n"
+                "     * If any of the kallsyms lookups failed, refuse to claim success."),
+        "guard": "        }\n#endif\n    }\n#endif\n\n    /*\n     * If any of the kallsyms lookups failed",
     },
 ]
 
