@@ -59,19 +59,63 @@ jobs:
           ls arch/arm64/configs/
           exit 1
 
+      - name: 缓存 clang 工具链
+        uses: actions/cache@v4
+        with:
+          path: clang
+          key: clang-${{ env.CLANG_VERSION }}-v2
+
       - name: 拉取 clang 工具链
         run: |
-          if git clone --depth=1 -b lineage-22.2 \
-               "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_${CLANG_VERSION}" clang 2>/dev/null; then
-            echo "[+] 使用 LineageOS prebuilt clang"
-          else
-            echo "[*] Lineage 仓库不可用，回落到 googlesource"
-            URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${CLANG_VERSION}.tar.gz"
-            curl -fsSL "$URL" -o clang.tar.gz
-            mkdir -p clang
-            tar -xzf clang.tar.gz -C clang
+          if [ -x clang/bin/clang ]; then
+            echo "[+] 命中缓存"
+            ./clang/bin/clang --version | head -1
+            exit 0
           fi
-          ./clang/bin/clang --version
+
+          # 源 1：LineageOS prebuilt 仓库（不带 -b，用默认分支，最稳）
+          for attempt in 1 2 3; do
+            echo "[*] 尝试 git clone (第 $attempt 次)"
+            rm -rf clang
+            if git clone --depth=1 \
+                 "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_${CLANG_VERSION}" clang 2>/dev/null \
+               && [ -x clang/bin/clang ]; then
+              echo "[+] 使用 LineageOS prebuilt clang"
+              ./clang/bin/clang --version | head -1
+              exit 0
+            fi
+            sleep 10
+          done
+
+          # 源 2：googlesource tar，带重试 + 完整性校验
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${CLANG_VERSION}.tar.gz"
+          for attempt in 1 2 3; do
+            echo "[*] 尝试 tar 下载 (第 $attempt 次): $URL"
+            rm -rf clang clang.tar.gz
+            if curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
+                    --connect-timeout 30 --max-time 900 -o clang.tar.gz "$URL"; then
+              if tar -tzf clang.tar.gz >/dev/null 2>&1; then
+                mkdir -p clang
+                tar -xzf clang.tar.gz -C clang
+                if [ -x clang/bin/clang ]; then
+                  echo "[+] 使用 googlesource clang"
+                  ./clang/bin/clang --version | head -1
+                  exit 0
+                fi
+              else
+                echo "[!] 压缩包损坏，重试"
+              fi
+            fi
+            rm -f clang.tar.gz
+            sleep 10
+          done
+
+          # 源 3：apt 兜底（版本较旧，仅保证流程能往下走）
+          echo "[!] 远程源全部失败，回落到 apt clang-14"
+          sudo apt-get install -y -qq clang-14
+          mkdir -p clang/bin
+          ln -sf /usr/bin/clang-14 clang/bin/clang
+          clang/bin/clang --version | head -1
 
       - name: 集成 SukiSU
         run: |
