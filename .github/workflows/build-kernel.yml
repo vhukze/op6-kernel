@@ -114,7 +114,10 @@ jobs:
             sed -i 's/^CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/' out/.config
           fi
 
-          export KCFLAGS="-Wno-error=constant-conversion -Wno-error=implicit-const-int-float-conversion -Wno-error=unused-but-set-variable -Wno-error=array-bounds"
+          # clang 17 对老内核代码更严格，这些是既有代码的告警/新版编译器的告警级别变化，
+          # 不是我们引入的逻辑问题，全部降级为 warning
+          # unused-variable: 开启 FTRACE 后 rtmutex.c 的 scope 变量在部分配置分支下未被使用
+          export KCFLAGS="-Wno-error=constant-conversion -Wno-error=implicit-const-int-float-conversion -Wno-error=unused-but-set-variable -Wno-error=unused-variable -Wno-error=array-bounds -Wno-error=unused-const-variable"
           make -j$(nproc) O=out ARCH=arm64 $MAKE_ARGS
 
           echo "===== 产物 ====="
