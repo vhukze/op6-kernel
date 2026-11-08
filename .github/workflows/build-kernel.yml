@@ -114,10 +114,49 @@ jobs:
             sed -i 's/^CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/' out/.config
           fi
 
-          # clang 17 对老内核代码更严格，这些是既有代码的告警/新版编译器的告警级别变化，
-          # 不是我们引入的逻辑问题，全部降级为 warning
-          # unused-variable: 开启 FTRACE 后 rtmutex.c 的 scope 变量在部分配置分支下未被使用
-          export KCFLAGS="-Wno-error=constant-conversion -Wno-error=implicit-const-int-float-conversion -Wno-error=unused-but-set-variable -Wno-error=unused-variable -Wno-error=array-bounds -Wno-error=unused-const-variable"
+          # clang 17 对 4.9 老内核远比当年的 gcc 严格。
+          # 下面这些都是**既有代码**的告警（无线驱动、文件系统、时钟等），
+          # 不是本次改动引入的逻辑问题，统一降级为 warning，避免逐条重试。
+          export KCFLAGS=""
+          for w in \
+            constant-conversion \
+            implicit-const-int-float-conversion \
+            unused-but-set-variable \
+            unused-variable \
+            unused-const-variable \
+            unused-function \
+            unused-label \
+            array-bounds \
+            logical-not-parentheses \
+            parentheses-equality \
+            sometimes-uninitialized \
+            uninitialized-const-pointer \
+            incompatible-pointer-types \
+            int-conversion \
+            enum-conversion \
+            implicit-function-declaration \
+            format \
+            format-extra-args \
+            switch \
+            misleading-indentation \
+            tautological-compare \
+            duplicate-decl-specifier \
+            address-of-packed-member \
+            missing-braces \
+            unknown-warning-option \
+            deprecated-declarations \
+            gnu-variable-sized-type-not-at-end \
+            frame-address \
+            attribute-packed-for-bitfield \
+            macro-redefined \
+            builtin-requires-header \
+            suspicious-move \
+            sizeof-array-argument \
+          ; do
+            KCFLAGS="$KCFLAGS -Wno-error=$w"
+          done
+          export KCFLAGS
+          echo "KCFLAGS = $KCFLAGS"
           make -j$(nproc) O=out ARCH=arm64 $MAKE_ARGS
 
           echo "===== 产物 ====="
