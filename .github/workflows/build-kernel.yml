@@ -100,11 +100,8 @@ jobs:
 
           MAKE_ARGS="CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
 
-          # clang 17 默认产出 DWARF5 调试信息，而 ubuntu-22.04 的 binutils ld
-          # 不认识 DWARF5 的 form 0x23（报 "Unrecognized form: 0x23"），
-          # 进而把正常符号当成 "multiple definition" 误报。
-          # 关闭 DEBUG_INFO 彻底规避（内核镜像本来也不需要调试信息）。
-          MAKE_ARGS="$MAKE_ARGS DEBUG_INFO=0"
+          # DEBUG_INFO 已在 extra_config.conf 里通过 CONFIG_DEBUG_INFO=n 关闭，
+          # 那是 Kconfig 项，不是 make 变量，这里不再重复传。
 
           echo "===== 工具链自检 ====="
           which clang; clang --version | head -1
