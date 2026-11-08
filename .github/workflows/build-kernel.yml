@@ -1,18 +1,12 @@
-name: Build OnePlus6 Kernel (LineageOS 22.2 + SukiSU builtin)
+name: Build OnePlus6 Kernel for APatch + KPM
 
 on:
   workflow_dispatch:
-    inputs:
-      sukisu_branch:
-        description: "SukiSU 分支 (builtin 带 SUSFS+KPM，main 走 kprobes)"
-        required: true
-        default: "builtin"
-        type: choice
-        options:
-          - builtin
-          - main
   push:
     branches: [ main ]
+    paths:
+      - '.github/workflows/build-kernel.yml'
+      - 'tools/**'
 
 env:
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_oneplus_sdm845
@@ -42,20 +36,17 @@ jobs:
           git clone --depth=1 -b "${KERNEL_BRANCH}" "${KERNEL_REPO}" kernel
           cd kernel
           echo "内核版本: $(sed -n 's/^VERSION = //p' Makefile).$(sed -n 's/^PATCHLEVEL = //p' Makefile).$(sed -n 's/^SUBLEVEL = //p' Makefile)"
-          echo "===== 可用 defconfig ====="
-          ls arch/arm64/configs/ | head -40
 
       - name: 探测 defconfig
         run: |
           cd kernel
-          for c in vendor/enchilada_defconfig enchilada_defconfig vendor/oneplus6_defconfig; do
+          for c in vendor/enchilada_defconfig enchilada_defconfig; do
             if [ -f "arch/arm64/configs/$c" ]; then
               echo "DEFCONFIG=$c" >> "$GITHUB_ENV"
               echo "[+] 选中 defconfig: $c"
               exit 0
             fi
           done
-          echo "[:!] 没找到 enchilada defconfig，全部列表如下"
           ls arch/arm64/configs/
           exit 1
 
@@ -63,7 +54,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: clang
-          key: clang-${{ env.CLANG_VERSION }}-v2
+          key: clang-${{ env.CLANG_VERSION }}-v3
 
       - name: 拉取 clang 工具链
         run: |
@@ -72,10 +63,7 @@ jobs:
             ./clang/bin/clang --version | head -1
             exit 0
           fi
-
-          # 源 1：LineageOS prebuilt 仓库（不带 -b，用默认分支，最稳）
           for attempt in 1 2 3; do
-            echo "[*] 尝试 git clone (第 $attempt 次)"
             rm -rf clang
             if git clone --depth=1 \
                  "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_${CLANG_VERSION}" clang 2>/dev/null \
@@ -86,55 +74,22 @@ jobs:
             fi
             sleep 10
           done
-
-          # 源 2：googlesource tar，带重试 + 完整性校验
-          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${CLANG_VERSION}.tar.gz"
-          for attempt in 1 2 3; do
-            echo "[*] 尝试 tar 下载 (第 $attempt 次): $URL"
-            rm -rf clang clang.tar.gz
-            if curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
-                    --connect-timeout 30 --max-time 900 -o clang.tar.gz "$URL"; then
-              if tar -tzf clang.tar.gz >/dev/null 2>&1; then
-                mkdir -p clang
-                tar -xzf clang.tar.gz -C clang
-                if [ -x clang/bin/clang ]; then
-                  echo "[+] 使用 googlesource clang"
-                  ./clang/bin/clang --version | head -1
-                  exit 0
-                fi
-              else
-                echo "[!] 压缩包损坏，重试"
-              fi
-            fi
-            rm -f clang.tar.gz
-            sleep 10
-          done
-
-          # 源 3：apt 兜底（版本较旧，仅保证流程能往下走）
-          echo "[!] 远程源全部失败，回落到 apt clang-14"
+          echo "[!] 回落到 apt clang-14"
           sudo apt-get install -y -qq clang-14
           mkdir -p clang/bin
           ln -sf /usr/bin/clang-14 clang/bin/clang
-          clang/bin/clang --version | head -1
 
-      - name: 集成 SukiSU
-        run: |
-          cd kernel
-          BRANCH="${{ github.event.inputs.sukisu_branch }}"
-          BRANCH="${BRANCH:-builtin}"
-          echo "使用分支: $BRANCH"
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$BRANCH"
-          echo "===== drivers/kernelsu 就位检查 ====="
-          ls -la drivers/kernelsu 2>/dev/null | head -10
-          grep -n "kernelsu" drivers/Makefile drivers/Kconfig || true
-
-      - name: 插入 4.9 手动 hook
-        run: |
-          python3 tools/patch_ksu_hooks.py kernel
-
-      - name: 合并全功能内核配置
+      - name: 合并 APatch/KPM 内核配置
         run: |
           python3 tools/apply_config.py "kernel/arch/arm64/configs/${DEFCONFIG}" tools/extra_config.conf
+
+      - name: 编译前检查关键配置
+        run: |
+          cd kernel
+          echo "===== 目标配置是否正确写入 defconfig ====="
+          grep -E '^CONFIG_(MODULES|KALLSYMS|KALLSYMS_ALL|KPROBES|FTRACE|DYNAMIC_FTRACE)=' "arch/arm64/configs/${DEFCONFIG}" || true
+          echo "--- 应当不存在（模块签名强制）---"
+          grep -E '^CONFIG_MODULE_SIG' "arch/arm64/configs/${DEFCONFIG}" || echo "[+] MODULE_SIG 相关项已移除"
 
       - name: 编译内核
         run: |
@@ -143,28 +98,29 @@ jobs:
           export SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
 
-          # 4.9 内核必须在每一步都传 CC/CROSS_COMPILE，
-          # 否则 prepare-compiler-check 会用不存在的 aarch64-linux-gnu-gcc 去探测
           MAKE_ARGS="CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
 
           echo "===== 工具链自检 ====="
           which clang; clang --version | head -1
           which aarch64-linux-gnu-gcc; aarch64-linux-gnu-gcc --version | head -1
-          which aarch64-linux-gnu-ld; aarch64-linux-gnu-ld --version | head -1
 
           make O=out ARCH=arm64 $MAKE_ARGS "${DEFCONFIG}"
 
-          # clang 17 对老驱动（ath9k 等）的 int->u8 隐式转换更严格，
-          # 这些是既有代码的告警，不是我们引入的问题，降级为警告
-          export KCFLAGS="-Wno-error=constant-conversion -Wno-error=implicit-const-int-float-conversion -Wno-error=unused-but-set-variable -Wno-error=array-bounds"
-          echo "===== defconfig 关键项 ====="
-          grep -E '^CONFIG_(KSU|KPM|KSU_SUSFS)=' out/.config || echo "[!] KSU 配置未写入 .config"
+          # 编译后强制校验：MODULE_SIG_FORCE 必须是 n
+          if grep -q '^CONFIG_MODULE_SIG_FORCE=y' out/.config; then
+            echo "[:!] CONFIG_MODULE_SIG_FORCE=y —— KPM 会加载失败，手动关闭"
+            sed -i 's/^CONFIG_MODULE_SIG_FORCE=y/# CONFIG_MODULE_SIG_FORCE is not set/' out/.config
+            sed -i 's/^CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/' out/.config
+            sed -i 's/^CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/' out/.config
+          fi
 
+          export KCFLAGS="-Wno-error=constant-conversion -Wno-error=implicit-const-int-float-conversion -Wno-error=unused-but-set-variable -Wno-error=array-bounds"
           make -j$(nproc) O=out ARCH=arm64 $MAKE_ARGS
+
           echo "===== 产物 ====="
           find out/arch/arm64/boot -maxdepth 1 -type f | sort
 
-      - name: 校验 KSU 是否真的编进去了
+      - name: 验证内核满足 KPM 条件
         run: |
           cd kernel
           IMG=""
@@ -173,11 +129,31 @@ jobs:
           done
           if [ -z "$IMG" ]; then echo "[:!] 没找到内核镜像"; exit 1; fi
           echo "内核镜像: $IMG ($(stat -c %s "$IMG") 字节)"
-          echo "===== 关键配置生效情况 ====="
-          grep -E '^CONFIG_(KSU|KPM|KSU_SUSFS|USER_NS|NF_TABLES)=' out/.config || true
-          grep -c '^CONFIG_KSU_SUSFS' out/.config || true
 
-      - name: 打包 AnyKernel3 (Recovery 直刷)
+          echo "===== KPM 前置条件检查 ====="
+          FAIL=0
+
+          if grep -q '^CONFIG_MODULE_SIG_FORCE=y' out/.config; then
+            echo "[:!] MODULE_SIG_FORCE=y —— KPM 无法加载"; FAIL=1
+          else
+            echo "[+] MODULE_SIG_FORCE 已关闭"
+          fi
+
+          for c in MODULES KALLSYMS KALLSYMS_ALL KPROBES FTRACE DYNAMIC_FTRACE; do
+            if grep -q "^CONFIG_${c}=y" out/.config; then
+              echo "[+] CONFIG_${c}=y"
+            else
+              echo "[:!] CONFIG_${c} 未启用"; FAIL=1
+            fi
+          done
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "[:!] 有前置条件未满足，KPM 可能不可用"
+            exit 1
+          fi
+          echo "[+] 全部前置条件满足"
+
+      - name: 打包 AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
@@ -187,42 +163,34 @@ jobs:
           for f in ../kernel/out/arch/arm64/boot/Image.gz ../kernel/out/arch/arm64/boot/Image.gz-dtb ../kernel/out/arch/arm64/boot/Image; do
             [ -f "$f" ] && IMG="$f" && break
           done
-          if [ -z "$IMG" ]; then echo "[:!] 没找到内核镜像"; ls -la ../kernel/out/arch/arm64/boot/; exit 1; fi
-          echo "[+] 使用镜像: $IMG ($(stat -c %s "$IMG") 字节)"
+          if [ -z "$IMG" ]; then echo "[:!] 没找到内核镜像"; exit 1; fi
 
-          # 新版 AnyKernel3 没有 kernel/ 目录，必须自己建
           mkdir -p kernel
           cp "$IMG" kernel/
           ls -la kernel/
 
-          if [ -f anykernel.sh ]; then
-            # 注意: AnyKernel3 模板默认是 maguro/omap 平台，必须全部改掉
-            sed -i 's|^kernel\.string=.*|kernel.string=SukiSU-Ultra enchilada (LineageOS 22.2 / 4.9)|' anykernel.sh
-            sed -i 's|^device\.name1=.*|device.name1=enchilada|' anykernel.sh
-            sed -i 's|^device\.name2=.*|device.name2=OnePlus6|' anykernel.sh
-            sed -i 's|^device\.name3=.*|device.name3=|' anykernel.sh
-            sed -i 's|^device\.name4=.*|device.name4=|' anykernel.sh
-            sed -i 's|^device\.name5=.*|device.name5=|' anykernel.sh
-            sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
-            sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1;|' anykernel.sh
-            echo "[+] anykernel.sh 已配置："
-            grep -E '^(device\.name|BLOCK|IS_SLOT_DEVICE|kernel\.string)' anykernel.sh
-          else
-            echo "[:!] anykernel.sh 不存在，跳过配置"
-          fi
+          sed -i 's|^kernel\.string=.*|kernel.string=APatch-KPM enchilada (LineageOS 22.2 / 4.9)|' anykernel.sh
+          sed -i 's|^device\.name1=.*|device.name1=enchilada|' anykernel.sh
+          sed -i 's|^device\.name2=.*|device.name2=OnePlus6|' anykernel.sh
+          sed -i 's|^device\.name3=.*|device.name3=|' anykernel.sh
+          sed -i 's|^device\.name4=.*|device.name4=|' anykernel.sh
+          sed -i 's|^device\.name5=.*|device.name5=|' anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
+          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1;|' anykernel.sh
 
-          zip -r9 "../SukiSU-enchilada-$(date +%Y%m%d)-${GITHUB_RUN_NUMBER}.zip" . -x '*.zip'
-          ls -la ../SukiSU-enchilada-*.zip
+          zip -r9 "../APatch-KPM-enchilada-$(date +%Y%m%d)-${GITHUB_RUN_NUMBER}.zip" . -x '*.zip'
+          ls -la ../APatch-KPM-enchilada-*.zip
 
       - name: 上传产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: enchilada-kernel-${{ github.run_number }}
+          name: enchilada-apatch-kpm-${{ github.run_number }}
           path: |
             kernel/out/arch/arm64/boot/Image.gz
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/Image
-            SukiSU-enchilada-*.zip
+            kernel/out/.config
+            APatch-KPM-enchilada-*.zip
           if-no-files-found: warn
           retention-days: 30
