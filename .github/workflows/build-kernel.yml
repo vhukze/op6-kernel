@@ -90,6 +90,13 @@ jobs:
           grep -E '^CONFIG_(MODULES|KALLSYMS|KALLSYMS_ALL|KPROBES|FTRACE|DYNAMIC_FTRACE)=' "arch/arm64/configs/${DEFCONFIG}" || true
           echo "--- 应当不存在（模块签名强制）---"
           grep -E '^CONFIG_MODULE_SIG' "arch/arm64/configs/${DEFCONFIG}" || echo "[+] MODULE_SIG 相关项已移除"
+          echo "--- DEBUG_INFO 应当已关闭（避免 DWARF5 与老 ld 冲突）---"
+          if grep -q '^CONFIG_DEBUG_INFO=y' "arch/arm64/configs/${DEFCONFIG}"; then
+            echo "[:!] CONFIG_DEBUG_INFO 仍为 y，链接会因 DWARF5 失败"
+            exit 1
+          else
+            echo "[+] CONFIG_DEBUG_INFO 已关闭"
+          fi
 
       - name: 编译内核
         run: |
